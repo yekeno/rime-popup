@@ -1,0 +1,47 @@
+[package]
+name = "rime-popup"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.79"
+license = "MIT"
+
+[lib]
+name = "rime_popup"
+path = "src/lib.rs"
+
+[[bin]]
+name = "rime-popup"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { version = "1.40", features = ["rt-multi-thread", "macros"] }
+calloop = "0.12"
+calloop-wayland-source = "0.3"
+wayland-client = { version = "0.31" }
+wayland-protocols = { version = "0.31", features = ["staging", "unstable"] }
+wayland-protocols-wlr = { version = "0.3", features = ["client"] }
+wayland-backend = { version = "0.3", default-features = false, features = ["client_system"] }
+zbus = { version = "4.4", default-features = false, features = ["tokio", "p2p"] }
+swash = "0.2"
+tiny-skia = "0.11"
+memmap2 = "0.2"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+anyhow = "1"
+thiserror = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+clap = { version = "4.5", features = ["derive"] }
+
+[dev-dependencies]
+wayland-server = { version = "0.31" }
+pretty_assertions = "1"
+tempfile = "3"
+predicates = "3"
+png = "0.17"
+
+[profile.release]
+strip = true
+lto = "thin"
+codegen-units = 1
+panic = "abort"
