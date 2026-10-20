@@ -1,1 +1,155 @@
-// placeholder; see next task for content
+use serde::Deserialize;
+use std::path::{Path, PathBuf};
+
+use crate::errors::{Error, Result};
+
+fn default_general() -> GeneralConfig {
+    GeneralConfig { log: "info".into() }
+}
+
+fn default_render() -> RenderConfig {
+    RenderConfig {
+        font_family: "DejaVu Sans Mono".into(),
+        font_fallback_cjk:
+            "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc".into(),
+        font_size: 14,
+        line_padding: 8,
+        candidate_gap: 12,
+        highlight_bg: "#3a3a3a".into(),
+        text: "#e6e6e6".into(),
+        border: "#666666".into(),
+        border_width: 1,
+        vertical_offset: 4,
+    }
+}
+
+fn default_filter() -> FilterConfig {
+    FilterConfig {
+        ignore_app_ids: vec!["emacs".into()],
+        show_preedit: true,
+        show_aux_up: false,
+        show_aux_down: true,
+    }
+}
+
+fn default_wayland() -> WaylandConfig {
+    WaylandConfig {
+        output_name: String::new(),
+        layer: "overlay".into(),
+        anchor: "top-left".into(),
+    }
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct Config {
+    #[serde(default = "default_general")]
+    pub general: GeneralConfig,
+    #[serde(default = "default_render")]
+    pub render: RenderConfig,
+    #[serde(default = "default_filter")]
+    pub filter: FilterConfig,
+    #[serde(default = "default_wayland")]
+    pub wayland: WaylandConfig,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct GeneralConfig {
+    pub log: String,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct RenderConfig {
+    pub font_family: String,
+    pub font_fallback_cjk: String,
+    pub font_size: u32,
+    pub line_padding: u32,
+    pub candidate_gap: u32,
+    pub highlight_bg: String,
+    pub text: String,
+    pub border: String,
+    pub border_width: u32,
+    pub vertical_offset: u32,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct FilterConfig {
+    pub ignore_app_ids: Vec<String>,
+    pub show_preedit: bool,
+    pub show_aux_up: bool,
+    pub show_aux_down: bool,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct WaylandConfig {
+    pub output_name: String,
+    pub layer: String,
+    pub anchor: String,
+}
+
+impl Config {
+    pub fn default_built() -> Self {
+        Config {
+            general: default_general(),
+            render: default_render(),
+            filter: default_filter(),
+            wayland: default_wayland(),
+        }
+    }
+
+    pub fn load_from_path(path: &Path) -> Result<Self> {
+        let raw = std::fs::read_to_string(path)?;
+        let parsed: Config =
+            toml::from_str(&raw).map_err(|source| Error::Toml {
+                path: path.to_path_buf(),
+                source,
+            })?;
+        Ok(parsed)
+    }
+
+    pub fn default_path() -> PathBuf {
+        let base = std::env::var_os("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                let home = std::env::var_os("HOME").expect("HOME unset");
+                PathBuf::from(home).join(".config")
+            });
+        base.join("rime-popup").join("config.toml")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn defaults_are_consistent() {
+        let c = Config::default_built();
+        assert_eq!(c.general.log, "info");
+        assert!(c.render.font_size >= 8);
+        assert!(c.filter.ignore_app_ids.contains(&"emacs".into()));
+    }
+
+    #[test]
+    fn rejects_unknown_fields() {
+        let cfg = r#"
+            [general]
+            log = "info"
+            [nonsense]
+            what = 1
+        "#;
+        let err = toml::from_str::<Config>(cfg).unwrap_err();
+        assert!(format!("{err}").contains("nonsense"));
+    }
+
+    #[test]
+    fn read_empty_section_uses_defaults() {
+        let cfg = r#"
+            [general]
+            log = "debug"
+        "#;
+        let c: Config = toml::from_str(cfg).expect("valid");
+        assert_eq!(c.general.log, "debug");
+        assert_eq!(c.render.font_size, 14);
+    }
+}
