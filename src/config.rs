@@ -43,22 +43,30 @@ fn default_wayland() -> WaylandConfig {
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
-    #[serde(default = "default_general")]
+    #[serde(default)]
     pub general: GeneralConfig,
-    #[serde(default = "default_render")]
+    #[serde(default)]
     pub render: RenderConfig,
-    #[serde(default = "default_filter")]
+    #[serde(default)]
     pub filter: FilterConfig,
-    #[serde(default = "default_wayland")]
+    #[serde(default)]
     pub wayland: WaylandConfig,
 }
 
 #[derive(Debug, Deserialize, Clone)]
+#[serde(default)]
 pub struct GeneralConfig {
     pub log: String,
 }
 
+impl Default for GeneralConfig {
+    fn default() -> Self {
+        default_general()
+    }
+}
+
 #[derive(Debug, Deserialize, Clone)]
+#[serde(default)]
 pub struct RenderConfig {
     pub font_family: String,
     pub font_fallback_cjk: String,
@@ -72,7 +80,14 @@ pub struct RenderConfig {
     pub vertical_offset: u32,
 }
 
+impl Default for RenderConfig {
+    fn default() -> Self {
+        default_render()
+    }
+}
+
 #[derive(Debug, Deserialize, Clone)]
+#[serde(default)]
 pub struct FilterConfig {
     pub ignore_app_ids: Vec<String>,
     pub show_preedit: bool,
@@ -80,11 +95,24 @@ pub struct FilterConfig {
     pub show_aux_down: bool,
 }
 
+impl Default for FilterConfig {
+    fn default() -> Self {
+        default_filter()
+    }
+}
+
 #[derive(Debug, Deserialize, Clone)]
+#[serde(default)]
 pub struct WaylandConfig {
     pub output_name: String,
     pub layer: String,
     pub anchor: String,
+}
+
+impl Default for WaylandConfig {
+    fn default() -> Self {
+        default_wayland()
+    }
 }
 
 impl Config {
@@ -151,5 +179,30 @@ mod tests {
         let c: Config = toml::from_str(cfg).expect("valid");
         assert_eq!(c.general.log, "debug");
         assert_eq!(c.render.font_size, 14);
+    }
+
+    #[test]
+    fn partial_filter_table_inherits_defaults() {
+        let cfg = r#"
+            [filter]
+            show_preedit = false
+        "#;
+        let c: Config = toml::from_str(cfg).expect("valid");
+        assert_eq!(c.filter.ignore_app_ids, vec!["emacs".to_string()]);
+        assert!(c.filter.show_aux_down);
+        assert!(!c.filter.show_preedit);
+        // show_aux_up defaulted to false; show_preedit overridden to false
+    }
+
+    #[test]
+    fn partial_render_table_inherits_defaults() {
+        let cfg = r#"
+            [render]
+            font_size = 20
+        "#;
+        let c: Config = toml::from_str(cfg).expect("valid");
+        assert_eq!(c.render.font_size, 20);
+        assert_eq!(c.render.font_family, "DejaVu Sans Mono");
+        assert_eq!(c.render.line_padding, 8);
     }
 }
