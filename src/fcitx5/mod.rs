@@ -4,5 +4,7 @@
 //! here would not compile.
 
 pub mod events;
+pub mod proxy;
 
 pub use events::{extract_lookup, LookupTable, PageUpdated};
+pub use proxy::Fcitx5Watcher;
