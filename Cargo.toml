@@ -25,6 +25,7 @@ zbus = { version = "4.4", default-features = false, features = ["tokio", "p2p"] 
 swash = "0.2"
 tiny-skia = "0.11"
 memmap2 = "0.2"
+tempfile = "3"
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 anyhow = "1"
@@ -36,7 +37,6 @@ clap = { version = "4.5", features = ["derive"] }
 [dev-dependencies]
 wayland-server = { version = "0.31" }
 pretty_assertions = "1"
-tempfile = "3"
 predicates = "3"
 png = "0.17"
 
