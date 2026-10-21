@@ -1,4 +1,51 @@
-fn main() {
-    eprintln!("rime-popup: bootstrap not yet implemented");
-    std::process::exit(2);
+use std::process::ExitCode;
+
+use clap::Parser;
+
+use rime_popup::cli::Cli;
+use rime_popup::config::Config;
+use rime_popup::{Error, Result};
+
+fn main() -> ExitCode {
+    match real_main() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("rime-popup: {e:#?}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn real_main() -> Result<()> {
+    let cli = Cli::parse();
+    let cfg_path = cli.config.clone().unwrap_or_else(Config::default_path);
+    let cfg = if cfg_path.exists() {
+        Config::load_from_path(&cfg_path)?
+    } else {
+        Config::default_built()
+    };
+    init_tracing(cfg.general.log.as_str());
+    tracing::info!(config_path = %cfg_path.display(), "rime-popup starting");
+
+    // The calloop runtime is wired in Task 16; this is a build-green stub
+    // that proves cli + config + tracing compose correctly.
+    Err(Error::Internal(
+        "wayland runtime not yet built (Task 16 next)".into(),
+    ))
+}
+
+fn init_tracing(default_level: &str) {
+    use tracing_subscriber::{fmt, EnvFilter};
+    let filter = EnvFilter::try_from_default_env()
+        .or_else(|_| EnvFilter::try_new(default_level))
+        .unwrap_or_else(|_| EnvFilter::new("info"));
+    let _ = fmt().with_env_filter(filter).try_init();
+}
+
+#[ignore = "full coverage in Task 16"]
+#[test]
+fn cli_parses_full() {
+    let c = Cli::try_parse_from(["rime-popup", "--log", "debug", "--foreground"])
+        .expect("parses");
+    assert!(c.foreground);
 }
