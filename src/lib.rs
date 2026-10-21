@@ -8,7 +8,9 @@
 //! - [`render`]: text shaping + raster
 //! - [`popup`]: glue from state to layer-shell surface
 //! - [`ipc`]: tokio → calloop bridge
+//! - [`cli`]: command-line flags
 
+pub mod cli;
 pub mod config;
 pub mod errors;
 pub mod fcitx5;
