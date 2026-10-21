@@ -28,7 +28,9 @@ pub struct Needed {
 
 impl Needed {
     pub fn is_satisfied(&self) -> bool {
-        REQUIRED.iter().all(|iface| self.version_of(iface).is_some())
+        REQUIRED
+            .iter()
+            .all(|iface| self.version_of(iface).is_some())
     }
 
     /// Version of the named global, if that interface has been advertised.
@@ -61,18 +63,11 @@ impl Needed {
 /// Returns `true` if the global is one we care about, `false` if it is
 /// irrelevant (in which case `globals` is left untouched and the caller
 /// should not bind it).
-pub fn record(
-    globals: &mut Needed,
-    name: u32,
-    interface: &str,
-    version: u32,
-) -> bool {
+pub fn record(globals: &mut Needed, name: u32, interface: &str, version: u32) -> bool {
     if !REQUIRED.contains(&interface) {
         return false;
     }
-    globals
-        .found
-        .insert(name, (interface.to_owned(), version));
+    globals.found.insert(name, (interface.to_owned(), version));
     true
 }
 

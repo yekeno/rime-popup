@@ -136,8 +136,14 @@ mod tests {
 
     #[test]
     fn parse_known_anchors() {
-        assert_eq!(parse_anchor("top-left").unwrap(), Anchor::Top | Anchor::Left);
-        assert_eq!(parse_anchor("bottom-right").unwrap(), Anchor::Bottom | Anchor::Right);
+        assert_eq!(
+            parse_anchor("top-left").unwrap(),
+            Anchor::Top | Anchor::Left
+        );
+        assert_eq!(
+            parse_anchor("bottom-right").unwrap(),
+            Anchor::Bottom | Anchor::Right
+        );
         assert_eq!(parse_anchor("left").unwrap(), Anchor::Left);
     }
 

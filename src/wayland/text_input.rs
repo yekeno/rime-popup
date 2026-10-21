@@ -42,7 +42,12 @@ impl LatestCaret {
     /// would place the popup at a stale position.
     pub fn cursor_rect(&mut self, x: i32, y: i32, w: i32, h: i32) {
         if self.focus.is_some() {
-            self.rect = Some(CaretRect { x, y, width: w, height: h });
+            self.rect = Some(CaretRect {
+                x,
+                y,
+                width: w,
+                height: h,
+            });
         }
     }
 }
