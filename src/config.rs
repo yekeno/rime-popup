@@ -10,11 +10,11 @@ fn default_general() -> GeneralConfig {
 fn default_render() -> RenderConfig {
     RenderConfig {
         font_family: "DejaVu Sans Mono".into(),
-        font_fallback_cjk:
-            "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc".into(),
+        font_fallback_cjk: "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc".into(),
         font_size: 14,
         line_padding: 8,
         candidate_gap: 12,
+        bg: "#1e1e1e".into(),
         highlight_bg: "#3a3a3a".into(),
         text: "#e6e6e6".into(),
         border: "#666666".into(),
@@ -73,6 +73,9 @@ pub struct RenderConfig {
     pub font_size: u32,
     pub line_padding: u32,
     pub candidate_gap: u32,
+    /// Popup background. Must be distinct from `text`: the plan's original
+    /// `clear_bg` filled with the text colour because no such field existed.
+    pub bg: String,
     pub highlight_bg: String,
     pub text: String,
     pub border: String,
@@ -127,11 +130,10 @@ impl Config {
 
     pub fn load_from_path(path: &Path) -> Result<Self> {
         let raw = std::fs::read_to_string(path)?;
-        let parsed: Config =
-            toml::from_str(&raw).map_err(|source| Error::Toml {
-                path: path.to_path_buf(),
-                source,
-            })?;
+        let parsed: Config = toml::from_str(&raw).map_err(|source| Error::Toml {
+            path: path.to_path_buf(),
+            source,
+        })?;
         Ok(parsed)
     }
 
