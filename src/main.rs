@@ -4,6 +4,7 @@ use clap::Parser;
 
 use rime_popup::cli::Cli;
 use rime_popup::config::Config;
+use rime_popup::signals::Reloadable;
 use rime_popup::Result;
 
 fn main() -> ExitCode {
@@ -19,15 +20,19 @@ fn main() -> ExitCode {
 fn real_main() -> Result<()> {
     let cli = Cli::parse();
     let cfg_path = cli.config.clone().unwrap_or_else(Config::default_path);
-    let cfg = if cfg_path.exists() {
+    // Remembered so SIGHUP knows whether an absent file is expected or is a
+    // file that has since been deleted out from under us.
+    let existed = cfg_path.exists();
+    let cfg = if existed {
         Config::load_from_path(&cfg_path)?
     } else {
+        tracing::info!(config_path = %cfg_path.display(), "no config file; using defaults");
         Config::default_built()
     };
     init_tracing(cfg.general.log.as_str());
     tracing::info!(config_path = %cfg_path.display(), "rime-popup starting");
 
-    rime_popup::runtime::run(cfg)?;
+    rime_popup::runtime::run(Reloadable::new(cfg, cfg_path, !existed))?;
     Ok(())
 }
 

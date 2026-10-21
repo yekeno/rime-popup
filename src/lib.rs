@@ -18,6 +18,7 @@ pub mod ipc;
 pub mod popup;
 pub mod render;
 pub mod runtime;
+pub mod signals;
 pub mod state;
 pub mod wayland;
 

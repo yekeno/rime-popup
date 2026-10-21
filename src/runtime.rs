@@ -36,7 +36,9 @@
 use std::os::fd::OwnedFd;
 use std::sync::{Arc, Mutex};
 
-use calloop::signals::{Signal, Signals};
+// `signals` below is our own module, so calloop's event type needs a
+// distinct name to stay reachable.
+use calloop::signals::{Event as SignalEvent, Signals};
 use calloop::EventLoop;
 use wayland_client::backend::{self, Backend};
 use wayland_client::protocol::{
@@ -59,6 +61,7 @@ use wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_shell_v1::{
 };
 
 use crate::config::Config;
+use crate::signals::{self, DaemonSignal, Reloadable};
 use crate::state::State;
 use crate::wayland::bind::{self, Globals};
 use crate::wayland::registry::Needed;
@@ -146,6 +149,8 @@ pub struct LoopData {
     pub seat_name: Option<String>,
     /// Most recent caret rectangle, positioned by the popup.
     pub caret: LatestCaret,
+    /// Config in force. Replaced wholesale on SIGHUP.
+    pub config: Config,
 }
 
 impl LoopData {
@@ -164,6 +169,44 @@ impl LoopData {
         self.text_input = Some(g.text_input_manager.get_text_input(&g.seat, qh, ()));
         tracing::info!(seat = ?self.seat_name, "created zwp_text_input_v3");
     }
+
+    /// Adopt a freshly reloaded config.
+    ///
+    /// Only the live loop state is touched. Globals, seats and text input were
+    /// negotiated with the compositor at startup and cannot be renegotiated
+    /// without reconnecting, so a reload covers everything the daemon reads on
+    /// its own — render and filter settings — and leaves the wire alone. That
+    /// split is why this is a method rather than a wholesale swap: a config
+    /// naming a different surface or seat must not tear down a working
+    /// connection.
+    fn apply_reloaded_config(&mut self, cfg: &Config) {
+        self.config = cfg.clone();
+        tracing::info!(
+            font_size = cfg.render.font_size,
+            log_level = cfg.general.log,
+            ignore_apps = cfg.filter.ignore_app_ids.len(),
+            "applied reloaded config to loop state"
+        );
+    }
+
+    /// Log a snapshot of what the daemon currently believes.
+    ///
+    /// This is the first thing to ask for when a popup does not appear: it
+    /// distinguishes "never got a caret" from "got a caret but no candidates"
+    /// from "no input context at all", which are three very different bugs
+    /// that otherwise look identical from outside.
+    fn dump_state(&self) {
+        tracing::info!(
+            seat = ?self.seat_name,
+            globals_bound = self.globals.is_some(),
+            text_input_created = self.text_input.is_some(),
+            advertised_globals = self.advertised.len(),
+            focused_surface = ?self.caret.focus,
+            caret_rect = ?self.caret.rect,
+            focused_ic = ?self.state.latest_focus(),
+            "SIGUSR1 state dump"
+        );
+    }
 }
 
 impl Default for LoopData {
@@ -176,6 +219,7 @@ impl Default for LoopData {
             text_input: None,
             seat_name: None,
             caret: LatestCaret::default(),
+            config: Config::default_built(),
         }
     }
 }
@@ -312,13 +356,6 @@ impl Dispatch<ZwpTextInputV3, ()> for LoopData {
     }
 }
 
-/// Signals that ask the daemon to shut down.
-///
-/// Deliberately narrow in Task 16. Task 18 adds SIGHUP (reload config) and
-/// SIGUSR1 (dump state) to the same source and branches on `Event::signal()`
-/// instead of stopping the loop.
-const SHUTDOWN_SIGNALS: &[Signal] = &[Signal::SIGINT, Signal::SIGTERM];
-
 /// Trap the shutdown signals and turn them into a loop stop.
 ///
 /// calloop masks these on the loop thread and reports them through a
@@ -330,18 +367,51 @@ const SHUTDOWN_SIGNALS: &[Signal] = &[Signal::SIGINT, Signal::SIGTERM];
 fn install_signal_handlers(
     handle: &calloop::LoopHandle<'_, LoopData>,
     stopper: calloop::LoopSignal,
+    mut reloadable: Reloadable,
 ) -> Result<()> {
-    let signals = Signals::new(SHUTDOWN_SIGNALS)
+    let signals = Signals::new(signals::WATCHED)
         .map_err(|e| crate::Error::Internal(format!("signal registration: {e}")))?;
     handle
-        .insert_source(signals, move |_, _, _| stopper.stop())
+        .insert_source(
+            signals,
+            // calloop hands the callback `(event, source_data, loop_data)` —
+            // in that order, with the loop data last.
+            // calloop hands the callback `(event, source_data, loop_data)` —
+            // in that order. The source data for `Signals` is `()`.
+            move |event: SignalEvent, _: &mut (), data: &mut LoopData| {
+                let signal = event.signal();
+                match signals::classify(signal) {
+                    DaemonSignal::Shutdown => {
+                        tracing::info!(?signal, "shutdown signal received");
+                        stopper.stop();
+                    }
+                    DaemonSignal::Reload => match reloadable.reload() {
+                        Ok(true) => {
+                            tracing::info!(path = %reloadable.path().display(), "config reloaded");
+                            data.apply_reloaded_config(reloadable.get());
+                        }
+                        // The failure is already logged with its cause by
+                        // `reload`; repeating it here would only add noise.
+                        Ok(false) => tracing::debug!("SIGHUP: config unchanged"),
+                        Err(e) => tracing::error!(error = %e, "SIGHUP reload failed"),
+                    },
+                    DaemonSignal::Dump => data.dump_state(),
+                }
+            },
+        )
         .map_err(|e| crate::Error::Internal(format!("signal source insert: {e}")))?;
-    tracing::info!(signals = ?SHUTDOWN_SIGNALS, "installed shutdown signal handlers");
+    tracing::info!(signals = ?signals::WATCHED, "installed signal handlers");
     Ok(())
 }
 
-pub fn run(cfg: Config) -> Result<()> {
-    let _ = cfg; // forward-compat: Task 18 wires config into reload
+pub fn run(reloadable: Reloadable) -> Result<()> {
+    // Cloned before `reloadable` moves into the signal handler; the handler
+    // owns the authoritative copy from then on.
+    let data_cfg = reloadable.get().clone();
+    tracing::info!(
+        config_path = %reloadable.path().display(),
+        "starting with this config"
+    );
 
     let conn = Arc::new(crate::wayland::connect()?);
     let (registry, advertised) = collect_globals(&conn)?;
@@ -385,7 +455,7 @@ pub fn run(cfg: Config) -> Result<()> {
         .insert(evl.handle())
         .map_err(|e| crate::Error::Internal(format!("wayland source insert: {e}")))?;
 
-    install_signal_handlers(&evl.handle(), evl.get_signal())?;
+    install_signal_handlers(&evl.handle(), evl.get_signal(), reloadable)?;
 
     tracing::info!("entering calloop event loop");
 
@@ -393,6 +463,7 @@ pub fn run(cfg: Config) -> Result<()> {
         needed,
         advertised,
         globals: Some(globals),
+        config: data_cfg,
         ..LoopData::default()
     };
     evl.run(None, &mut data, |data| {
@@ -436,6 +507,26 @@ mod tests {
     #[ignore = "needs a real wayland session; run manually under niri"]
     #[test]
     fn runtime_starts_and_exits_cleanly() {
-        let _ = run(crate::config::Config::default_built());
+        let dir = tempfile::tempdir().expect("tmpdir");
+        let path = dir.path().join("rime-popup.toml");
+        let _ = run(Reloadable::new(Config::default_built(), path, true));
+    }
+
+    #[test]
+    fn dump_state_tolerates_a_bare_loop() {
+        // Nothing bound, no seat, no caret: the dump must still run. This is
+        // the state a user is in when SIGUSR1 is the first thing they try.
+        let d = LoopData::default();
+        d.dump_state();
+    }
+
+    #[test]
+    fn reloaded_config_replaces_the_one_in_force() {
+        let mut d = LoopData::default();
+        let before = d.config.render.font_size;
+        let mut fresh = Config::default_built();
+        fresh.render.font_size = before + 7;
+        d.apply_reloaded_config(&fresh);
+        assert_eq!(d.config.render.font_size, before + 7);
     }
 }
