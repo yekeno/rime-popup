@@ -1617,6 +1617,7 @@ checksum = "8f81f365b8b4a97f422ac0e8737c438024b5951734506b0e1d775c73030561f4"
 dependencies = [
  "bitflags 2.13.2",
  "wayland-backend",
+ "wayland-client",
  "wayland-scanner",
 ]
 

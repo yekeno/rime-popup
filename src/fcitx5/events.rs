@@ -6,6 +6,8 @@
 
 use serde::Deserialize;
 
+use crate::wayland::text_input::CaretRect;
+
 /// The candidate list plus everything the popup needs to render it.
 #[derive(Debug, Default, Clone, Deserialize, PartialEq)]
 pub struct LookupTable {
@@ -73,6 +75,57 @@ pub fn extract_lookup(
     })
 }
 
+/// Property carrying a complete caret rectangle, if fcitx5 provides it.
+pub const CURSOR_RECT_PROP: &str = "CursorRect";
+/// Property carrying the caret's top-left position.
+pub const CURSOR_POS_PROP: &str = "CursorPos";
+/// Property carrying the caret's size, used when no full rect is published.
+pub const CURSOR_PER_CHAR_PROP: &str = "CursorPosPerChar";
+
+/// Build a [`CaretRect`] from whatever geometry fcitx5 published.
+///
+/// fcitx5 has published the caret two ways across versions, and this daemon
+/// does not assume either is present:
+///
+/// * `CursorRect` — a complete `(x, y, width, height)`. Preferred when set.
+/// * `CursorPos` + `CursorPosPerChar` — the same rectangle split across two
+///   `(x, y)`-ish properties. Used only as a fallback.
+///
+/// Returning `None` for a degenerate rectangle (non-positive width or height)
+/// is deliberate: fcitx5 zeroes the geometry when a context has no caret, and
+/// a zero-width rect would place the popup at the window origin rather than
+/// nowhere.
+pub fn extract_caret(
+    cursor_rect: Option<(i32, i32, i32, i32)>,
+    cursor_pos: Option<(i32, i32)>,
+    per_char: Option<(i32, i32)>,
+) -> Option<CaretRect> {
+    if let Some((x, y, w, h)) = cursor_rect {
+        // Fall through rather than return on a degenerate rect: fcitx5 zeroes
+        // `CursorRect` when it is not meaningfully set, which is exactly the
+        // case where the split properties may still hold a usable value.
+        if let Some(rect) = viable(x, y, w, h) {
+            return Some(rect);
+        }
+    }
+    let (x, y) = cursor_pos?;
+    let (w, h) = per_char?;
+    viable(x, y, w, h)
+}
+
+/// Reject rectangles that cannot position a popup.
+fn viable(x: i32, y: i32, w: i32, h: i32) -> Option<CaretRect> {
+    if w <= 0 || h <= 0 {
+        return None;
+    }
+    Some(CaretRect {
+        x,
+        y,
+        width: w,
+        height: h,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -125,5 +178,64 @@ mod tests {
         let r = extract_lookup(None, true, vec![], 0, 0, None, None).expect("table");
         assert!(r.candidates.is_empty());
         assert_eq!(r.highlighted(), None);
+    }
+
+    // --- caret extraction ---------------------------------------------------
+
+    #[test]
+    fn caret_prefers_the_full_rect() {
+        let c = extract_caret(Some((10, 20, 2, 16)), Some((1, 1)), Some((1, 1))).expect("caret");
+        assert_eq!(
+            c,
+            CaretRect {
+                x: 10,
+                y: 20,
+                width: 2,
+                height: 16
+            }
+        );
+    }
+
+    #[test]
+    fn caret_falls_back_to_pos_and_size() {
+        // No full rect: compose it from the split properties.
+        let c = extract_caret(None, Some((7, 9)), Some((1, 18))).expect("caret");
+        assert_eq!(
+            c,
+            CaretRect {
+                x: 7,
+                y: 9,
+                width: 1,
+                height: 18
+            }
+        );
+    }
+
+    #[test]
+    fn caret_is_none_when_no_geometry_published() {
+        assert_eq!(extract_caret(None, None, None), None);
+    }
+
+    #[test]
+    fn caret_is_none_when_size_missing() {
+        // A position with no size cannot place a popup; do not invent one.
+        assert_eq!(extract_caret(None, Some((3, 4)), None), None);
+    }
+
+    #[test]
+    fn caret_rejects_zero_sized_rect() {
+        // fcitx5 zeroes geometry when a context has no caret. Adopting it
+        // would anchor the popup at the window origin instead of hiding it.
+        assert_eq!(extract_caret(Some((5, 5, 0, 0)), None, None), None);
+        assert_eq!(extract_caret(Some((5, 5, 0, 12)), None, None), None);
+        assert_eq!(extract_caret(None, Some((5, 5)), Some((0, 12))), None);
+    }
+
+    #[test]
+    fn degenerate_rect_falls_through_to_split_properties() {
+        // A zeroed full rect must not shadow usable split geometry.
+        let c = extract_caret(Some((0, 0, 0, 0)), Some((2, 3)), Some((1, 16))).expect("caret");
+        assert_eq!(c.x, 2);
+        assert_eq!(c.height, 16);
     }
 }

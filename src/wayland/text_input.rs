@@ -1,8 +1,23 @@
 //! Wrap `zwp_text_input_v3` events into a clean `LatestCaret` value.
 //!
-//! The protocol emits `enter`, `leave`, and `done` carrying a cursor rect per
-//! focused text input. We collapse those into the single "most recent caret"
-//! the popup positions itself against.
+//! The protocol emits `enter` and `leave` around the focused text input. We
+//! collapse those into the single "most recent caret" the popup positions
+//! itself against.
+//!
+//! # The caret rectangle does not come from wayland
+//!
+//! It is tempting to read [`CaretRect`] off a `zwp_text_input_v3` `done`
+//! event, but that event carries only a `serial`; there is no cursor field in
+//! the protocol at all. `set_cursor_rectangle` runs the *other* direction —
+//! it is a request an input method sends to the compositor to say where the
+//! caret is. An input method is therefore never told where the caret is over
+//! wayland, and cannot ask.
+//!
+//! The rectangle that positions the popup comes from fcitx5's own DBus input
+//! context instead — see [`crate::fcitx5::events::extract_caret`]. What this
+//! module contributes is the *focus* half: knowing which surface is live, so
+//! a rectangle arriving from a context we are no longer tracking can be
+//! discarded rather than drawn at a stale position.
 
 /// Opaque identifier for a `WlSurface`, taken from its wire id.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]

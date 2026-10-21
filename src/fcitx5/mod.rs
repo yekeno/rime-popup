@@ -6,5 +6,8 @@
 pub mod events;
 pub mod proxy;
 
-pub use events::{extract_lookup, LookupTable, PageUpdated};
+pub use events::{
+    extract_caret, extract_lookup, LookupTable, PageUpdated, CURSOR_PER_CHAR_PROP, CURSOR_POS_PROP,
+    CURSOR_RECT_PROP,
+};
 pub use proxy::Fcitx5Watcher;

@@ -18,7 +18,7 @@ tokio = { version = "1.40", features = ["rt-multi-thread", "macros"] }
 calloop = { version = "0.13", features = ["signals"] }
 calloop-wayland-source = "0.3"
 wayland-client = { version = "0.31" }
-wayland-protocols = { version = "0.31", features = ["staging", "unstable"] }
+wayland-protocols = { version = "0.31", features = ["staging", "unstable", "client"] }
 wayland-protocols-wlr = { version = "0.3", features = ["client"] }
 wayland-backend = { version = "0.3", default-features = false, features = ["client_system"] }
 zbus = { version = "4.4", default-features = false, features = ["tokio", "p2p"] }

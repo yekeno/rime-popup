@@ -3,6 +3,7 @@
 //! Surface the components from one place. Each submodule owns a small piece
 //! of state and is initialized from `bind`.
 
+pub mod bind;
 pub mod layer_shell;
 pub mod registry;
 pub mod shm;

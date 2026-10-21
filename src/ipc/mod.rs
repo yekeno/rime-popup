@@ -13,6 +13,7 @@ use calloop::channel::Channel;
 
 use crate::fcitx5::events::LookupTable;
 use crate::state::IcId;
+use crate::wayland::text_input::CaretRect;
 
 /// Re-exported so the runtime can name the event type when registering the
 /// channel with calloop, without reaching into calloop's module layout.
@@ -26,6 +27,8 @@ pub enum DaemonToWayland {
     FocusOut(IcId),
     /// fcitx5 published a new candidate list.
     LookupTable { ic: IcId, table: LookupTable },
+    /// fcitx5 published a new caret rectangle for this context.
+    Caret { ic: IcId, rect: CaretRect },
     /// A commit finished; the popup may be retired.
     Commit(IcId),
     /// The input context object itself was destroyed.
@@ -39,6 +42,7 @@ impl DaemonToWayland {
             Self::FocusIn(ic)
             | Self::FocusOut(ic)
             | Self::LookupTable { ic, .. }
+            | Self::Caret { ic, .. }
             | Self::Commit(ic)
             | Self::Removed(ic) => ic,
         }
@@ -131,11 +135,35 @@ mod tests {
                 ic: id.clone(),
                 table: LookupTable::default(),
             },
+            DaemonToWayland::Caret {
+                ic: id.clone(),
+                rect: CaretRect::default(),
+            },
             DaemonToWayland::Commit(id.clone()),
             DaemonToWayland::Removed(id.clone()),
         ];
         for m in &msgs {
             assert_eq!(m.ic(), &id);
+        }
+    }
+
+    #[test]
+    fn caret_survives_the_channel() {
+        let (tx, rx) = channel::channel();
+        let rect = CaretRect {
+            x: 12,
+            y: 30,
+            width: 1,
+            height: 18,
+        };
+        tx.send(DaemonToWayland::Caret { ic: ic(), rect })
+            .expect("send");
+
+        let got = drain(&rx);
+        assert_eq!(got.len(), 1);
+        match &got[0] {
+            DaemonToWayland::Caret { rect: r, .. } => assert_eq!(*r, rect),
+            other => panic!("expected Caret, got {other:?}"),
         }
     }
 

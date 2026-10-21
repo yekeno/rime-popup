@@ -6,6 +6,9 @@ pub enum Error {
     #[error("wayland backend connect error: {0}")]
     WaylandConnect(#[source] Box<dyn std::error::Error + Send + Sync>),
 
+    #[error("wayland global not advertised: {0}")]
+    MissingGlobal(String),
+
     #[error("dbus error: {0}")]
     Dbus(#[from] zbus::Error),
 
