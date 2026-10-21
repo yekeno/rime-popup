@@ -27,11 +27,7 @@ pub struct PopupFrame {
 /// or the focus does not currently carry a lookup table. Allocation failures
 /// during `make_canvas` are also folded into `None` because the caller has no
 /// useful recovery beyond skipping this frame.
-pub fn decide_and_paint(
-    st: &State,
-    caret: &LatestCaret,
-    cfg: &Config,
-) -> Option<PopupFrame> {
+pub fn decide_and_paint(st: &State, caret: &LatestCaret, cfg: &Config) -> Option<PopupFrame> {
     let lk = st.focused_lookup()?;
     let _caret_rect = caret.rect?;
     let total = lk.candidates.len();
@@ -41,9 +37,7 @@ pub fn decide_and_paint(
     let metrics = measure(&lk.candidates, &cfg.render);
     let mut canvas = paint::make_canvas(metrics).ok()?;
     paint::clear_bg(&mut canvas, &cfg.render);
-    let cursor = lk
-        .cursor_pos
-        .min(total.saturating_sub(1) as u32) as usize;
+    let cursor = lk.cursor_pos.min(total.saturating_sub(1) as u32) as usize;
     paint::draw_highlight(&mut canvas, &cfg.render, metrics, cursor, total);
     Some(PopupFrame {
         metrics,
@@ -56,7 +50,7 @@ pub fn decide_and_paint(
 mod tests {
     use super::*;
     use crate::fcitx5::events::LookupTable;
-    use crate::wayland::text_input::{WlSurfaceId};
+    use crate::wayland::text_input::WlSurfaceId;
     use std::sync::Arc;
 
     #[test]
@@ -109,8 +103,7 @@ mod tests {
         let mut caret = LatestCaret::default();
         caret.focus_enter(WlSurfaceId(1));
         caret.cursor_rect(10, 10, 1, 16);
-        let f = decide_and_paint(&st, &caret, &Config::default_built())
-            .expect("frame");
+        let f = decide_and_paint(&st, &caret, &Config::default_built()).expect("frame");
         assert!(f.canvas.width() > 0);
         assert!(f.canvas.height() > 0);
     }
