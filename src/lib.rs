@@ -17,6 +17,7 @@ pub mod fcitx5;
 pub mod ipc;
 pub mod popup;
 pub mod render;
+pub mod runtime;
 pub mod state;
 pub mod wayland;
 

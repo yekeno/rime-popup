@@ -4,7 +4,7 @@ use clap::Parser;
 
 use rime_popup::cli::Cli;
 use rime_popup::config::Config;
-use rime_popup::{Error, Result};
+use rime_popup::Result;
 
 fn main() -> ExitCode {
     match real_main() {
@@ -27,11 +27,8 @@ fn real_main() -> Result<()> {
     init_tracing(cfg.general.log.as_str());
     tracing::info!(config_path = %cfg_path.display(), "rime-popup starting");
 
-    // The calloop runtime is wired in Task 16; this is a build-green stub
-    // that proves cli + config + tracing compose correctly.
-    Err(Error::Internal(
-        "wayland runtime not yet built (Task 16 next)".into(),
-    ))
+    rime_popup::runtime::run(cfg)?;
+    Ok(())
 }
 
 fn init_tracing(default_level: &str) {
@@ -42,10 +39,19 @@ fn init_tracing(default_level: &str) {
     let _ = fmt().with_env_filter(filter).try_init();
 }
 
-#[ignore = "full coverage in Task 16"]
 #[test]
 fn cli_parses_full() {
-    let c = Cli::try_parse_from(["rime-popup", "--log", "debug", "--foreground"])
-        .expect("parses");
+    let c = Cli::try_parse_from(["rime-popup", "--log", "debug", "--foreground"]).expect("parses");
     assert!(c.foreground);
+}
+
+#[test]
+fn cli_accepts_config_override() {
+    let c = Cli::try_parse_from(["rime-popup", "--config", "/tmp/rp.toml"]).expect("parses");
+    assert_eq!(c.config, Some("/tmp/rp.toml".into()));
+}
+
+#[test]
+fn cli_rejects_unknown_flag() {
+    assert!(Cli::try_parse_from(["rime-popup", "--nope"]).is_err());
 }
