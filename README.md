@@ -99,10 +99,20 @@ This is the machine the feature was developed and verified on:
 | libc | glibc 2.35 |
 | Session | Wayland (`XDG_SESSION_TYPE=wayland`, `XDG_CURRENT_DESKTOP=niri`) |
 | Compositor | niri 26.04 (`v26.04-192-g4263c9a1` + TextInputRect patch) |
+| smithay | 0.7.0 at upstream `9786228` + cursor-rectangle accessor |
 | Input method | fcitx5 5.0.14, fcitx5-rime 5.0.11, librime 1.7.3 |
-| Rust | rustc / cargo 1.93.1 |
+| Rust | rustc / cargo 1.93.1 (rustup) |
+| libinput | 1.25.0 from source (Ubuntu 22.04 stock 1.20 is too old for niri) |
+| Wayland | 1.24.0 (`savoury1/display` PPA) |
+| libdisplay-info | 0.2.0 (`savoury1/display` PPA) |
 | CJK font | `/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc` |
-| Wayland | 1.24 (`libwayland-dev` 1.24.0) |
+
+Ubuntu 22.04 needs two non-stock pieces before niri builds: `libdisplay-info`
+and libinput ≥ 1.21. The tested machine builds libinput 1.25.0 into a private
+prefix (`/srv/tools/wm/build/libinput-prefix`) and points pkg-config and the
+linker at it (`RUSTFLAGS` carries both `-L native=…` and an rpath). The exact
+commands are in
+[niri's build documentation](https://github.com/yekeno/niri/blob/main/docs/text-input-rect.md#building-this-fork-on-ubuntu-2204).
 
 Ubuntu 22.04 ships older `libwayland` and no `libdisplay-info-dev`; the niri
 build instructions below use the `savoury1/display` PPA for those two
@@ -127,6 +137,10 @@ sudo apt install -y build-essential pkg-config clang \
 sudo add-apt-repository ppa:savoury1/display
 sudo apt update
 sudo apt install -y libdisplay-info-dev libwayland-dev
+
+# Ubuntu 22.04 ships libinput 1.20, but niri needs >= 1.21 (dwtp symbol).
+# Build 1.25.0 into a private prefix and export it before cargo build; see
+# https://github.com/yekeno/niri/blob/main/docs/text-input-rect.md
 
 git clone https://github.com/yekeno/niri.git
 cd niri
