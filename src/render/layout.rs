@@ -46,16 +46,34 @@ pub fn advance(s: &str, font_size: u32) -> u32 {
         .sum()
 }
 
+/// Width of a candidate cell's content: label, gap, then text.
+///
+/// An empty label contributes nothing, so label-less panels keep the previous
+/// layout exactly.
+fn content_width(label: &str, text: &str, cfg: &RenderConfig) -> u32 {
+    let label_w = advance(label, cfg.font_size);
+    if label_w == 0 {
+        advance(text, cfg.font_size)
+    } else {
+        label_w + cfg.label_gap + advance(text, cfg.font_size)
+    }
+}
+
 /// Size the popup for `candidates`.
 ///
-/// The popup is as wide as the widest candidate plus its gap, times the
-/// candidate count, plus padding on both sides. An empty candidate list still
-/// yields a valid, minimally-sized box so the surface can exist before the
-/// first candidates arrive.
-pub fn measure(candidates: &[String], cfg: &RenderConfig) -> PopupMetrics {
+/// The popup is as wide as the widest candidate cell plus its gap, times the
+/// candidate count, plus padding on both sides. A cell contains the position
+/// label, a gap, and the candidate text. An empty candidate list still yields
+/// a valid, minimally-sized box so the surface can exist before the first
+/// candidates arrive.
+pub fn measure(labels: &[String], candidates: &[String], cfg: &RenderConfig) -> PopupMetrics {
     let widest = candidates
         .iter()
-        .map(|s| advance(s, cfg.font_size))
+        .enumerate()
+        .map(|(idx, text)| {
+            let label = labels.get(idx).map_or("", String::as_str);
+            content_width(label, text, cfg)
+        })
         .max()
         .unwrap_or(0);
     // Always reserve at least one half-width glyph so an empty list does not
@@ -112,14 +130,14 @@ mod tests {
 
     #[test]
     fn measure_one_candidate() {
-        let m = measure(&["你".into()], &cfg());
+        let m = measure(&[], &["你".into()], &cfg());
         assert!(m.width > 0);
         assert!(m.height >= cfg().font_size);
     }
 
     #[test]
     fn measure_handles_empty() {
-        let m = measure(&[], &cfg());
+        let m = measure(&[], &[], &cfg());
         assert!(
             m.width >= 2 * cfg().line_padding,
             "empty list still needs padding on both sides"
@@ -130,8 +148,8 @@ mod tests {
     #[test]
     fn cjk_is_wider_than_ascii() {
         let c = cfg();
-        let cjk = measure(&["你你你".into()], &c);
-        let ascii = measure(&["abc".into()], &c);
+        let cjk = measure(&[], &["你你你".into()], &c);
+        let ascii = measure(&[], &["abc".into()], &c);
         assert!(
             cjk.width > ascii.width,
             "three full-width glyphs must exceed three half-width ones"
@@ -148,8 +166,8 @@ mod tests {
     #[test]
     fn width_grows_with_candidate_count() {
         let c = cfg();
-        let one = measure(&["你".into()], &c);
-        let three = measure(&["你".into(), "好".into(), "吗".into()], &c);
+        let one = measure(&[], &["你".into()], &c);
+        let three = measure(&[], &["你".into(), "好".into(), "吗".into()], &c);
         assert!(
             three.width > one.width,
             "each extra candidate must add a cell, not share one"
@@ -159,7 +177,7 @@ mod tests {
     #[test]
     fn cells_tile_without_overlap() {
         let c = cfg();
-        let m = measure(&["你".into(), "好".into()], &c);
+        let m = measure(&[], &["你".into(), "好".into()], &c);
         let x0 = cell_x(&m, &c, 0);
         let x1 = cell_x(&m, &c, 1);
         assert_eq!(x1 - x0, m.cell_w);
@@ -167,6 +185,30 @@ mod tests {
             x1 + m.cell_w + c.line_padding <= m.width + c.line_padding,
             "last cell must stay inside the popup"
         );
+    }
+
+    #[test]
+    fn labels_widen_the_cell() {
+        let c = cfg();
+        let plain = measure(&[], &["你".into()], &c);
+        let labelled = measure(&["1.".into()], &["你".into()], &c);
+        assert!(
+            labelled.cell_w > plain.cell_w,
+            "a visible position label must reserve horizontal space"
+        );
+        assert_eq!(
+            labelled.cell_w,
+            plain.cell_w + advance("1.", c.font_size) + c.label_gap,
+            "the label and its gap must be accounted for exactly once"
+        );
+    }
+
+    #[test]
+    fn empty_label_indices_fall_back_to_text_width() {
+        let c = cfg();
+        let m = measure(&["".into()], &["你".into()], &c);
+        let plain = measure(&[], &["你".into()], &c);
+        assert_eq!(m.cell_w, plain.cell_w);
     }
 
     #[test]

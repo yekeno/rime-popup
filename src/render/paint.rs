@@ -147,7 +147,7 @@ mod tests {
     }
 
     fn metrics() -> PopupMetrics {
-        crate::render::layout::measure(&["你好".into(), "世界".into()], &cfg())
+        crate::render::layout::measure(&[], &["你好".into(), "世界".into()], &cfg())
     }
 
     #[test]

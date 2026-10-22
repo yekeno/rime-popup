@@ -1,13 +1,9 @@
-//! fcitx5 integration: DBus proxy pool + event mapper.
+//! fcitx5 integration.
 //!
-//! `proxy` is declared in a later task once `proxy.rs` exists; declaring it
-//! here would not compile.
+//! We present ourselves as a kimpanel panel over D-Bus; fcitx5 pushes the
+//! candidate list and caret rectangle to us and stops using its own UI.
 
 pub mod events;
-pub mod proxy;
+pub mod kimpanel;
 
-pub use events::{
-    extract_caret, extract_lookup, LookupTable, PageUpdated, CURSOR_PER_CHAR_PROP, CURSOR_POS_PROP,
-    CURSOR_RECT_PROP,
-};
-pub use proxy::Fcitx5Watcher;
+pub use events::LookupTable;

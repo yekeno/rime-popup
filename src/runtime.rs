@@ -42,11 +42,14 @@ use calloop::signals::{Event as SignalEvent, Signals};
 use calloop::EventLoop;
 use wayland_client::backend::{self, Backend};
 use wayland_client::protocol::{
+    wl_buffer::{Event as WlBufferEvent, WlBuffer},
     wl_compositor::{Event as WlCompositorEvent, WlCompositor},
     wl_display, wl_registry,
     wl_registry::WlRegistry,
     wl_seat::{Capability as SeatCapability, Event as WlSeatEvent, WlSeat},
     wl_shm::{Event as WlShmEvent, WlShm},
+    wl_shm_pool::WlShmPool,
+    wl_surface::WlSurface,
 };
 use wayland_client::{Connection, Dispatch, Proxy, QueueHandle, WEnum};
 
@@ -57,13 +60,21 @@ use wayland_protocols::wp::text_input::zv3::client::zwp_text_input_v3::{
     Event as TextInputEvent, ZwpTextInputV3,
 };
 use wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_shell_v1::{
-    Event as LayerShellEvent, ZwlrLayerShellV1,
+    Event as LayerShellEvent, Layer, ZwlrLayerShellV1,
+};
+use wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_surface_v1::{
+    Event as LayerSurfaceEvent, ZwlrLayerSurfaceV1,
 };
 
 use crate::config::Config;
+use crate::ipc::{self, DaemonToWayland};
+use crate::popup;
+use crate::render::text::FontFace;
 use crate::signals::{self, DaemonSignal, Reloadable};
 use crate::state::State;
 use crate::wayland::bind::{self, Globals};
+use crate::wayland::layer_shell::{parse_anchor, parse_layer};
+use crate::wayland::popup::Popup;
 use crate::wayland::registry::Needed;
 use crate::wayland::text_input::{LatestCaret, WlSurfaceId};
 use crate::Result;
@@ -151,6 +162,15 @@ pub struct LoopData {
     pub caret: LatestCaret,
     /// Config in force. Replaced wholesale on SIGHUP.
     pub config: Config,
+    /// Queue handle, kept so callbacks can create proxies.
+    pub qh: Option<QueueHandle<Self>>,
+    /// The CJK font, loaded once at startup and on reload. `None` means text
+    /// is skipped but the popup still paints its background.
+    pub font: Option<FontFace>,
+    /// The one popup surface, created lazily on the first candidate list.
+    pub popup: Option<Popup>,
+    /// Most recently painted frame, re-uploaded after each configure.
+    pub last_frame: Option<popup::PopupFrame>,
 }
 
 impl LoopData {
@@ -181,6 +201,7 @@ impl LoopData {
     /// connection.
     fn apply_reloaded_config(&mut self, cfg: &Config) {
         self.config = cfg.clone();
+        self.font = load_font(&cfg.render);
         tracing::info!(
             font_size = cfg.render.font_size,
             log_level = cfg.general.log,
@@ -207,6 +228,173 @@ impl LoopData {
             "SIGUSR1 state dump"
         );
     }
+
+    /// Fold one message from the fcitx5 thread into the loop state.
+    ///
+    /// Every message ends with a repaint attempt: candidate and caret updates
+    /// arrive independently and in either order, so the only reliable place to
+    /// decide whether a frame is drawable is after each one.
+    fn handle_daemon_msg(&mut self, msg: DaemonToWayland) {
+        match msg {
+            DaemonToWayland::FocusIn(ic) => {
+                self.state.insert_ic(ic.clone());
+                self.state.focus_in(&ic);
+            }
+            DaemonToWayland::FocusOut(ic) => self.state.focus_out(&ic),
+            DaemonToWayland::Removed(ic) => self.state.remove_ic(&ic),
+            DaemonToWayland::Commit(ic) => {
+                self.state
+                    .set_lookup(&ic, crate::fcitx5::events::LookupTable::default());
+            }
+            DaemonToWayland::LookupTable { ic, table } => {
+                self.state.insert_ic(ic.clone());
+                self.state.focus_in(&ic);
+                self.state.set_lookup(&ic, table);
+            }
+            DaemonToWayland::Caret { ic, rect } => {
+                self.state.insert_ic(ic.clone());
+                self.state.focus_in(&ic);
+                self.caret.set_rect(rect);
+            }
+        }
+        self.refresh_popup();
+    }
+
+    /// The frame the current state would paint, if any.
+    fn current_frame(&self) -> Option<popup::PopupFrame> {
+        popup::decide_and_paint(&self.state, &self.caret, &self.config, self.font.as_ref())
+    }
+
+    /// Margins placing the popup just below the caret.
+    ///
+    /// The popup is anchored top-left, so only the top and left margins are
+    /// meaningful. Coordinates come from the client's IM module, which for
+    /// wayland clients are toplevel-relative; niri's focused column sits at
+    /// the output's left edge, which makes the two spaces coincide in the
+    /// common case.
+    fn popup_margin(&self) -> (i32, i32, i32, i32) {
+        let Some(rect) = self.caret.rect else {
+            return (0, 0, 0, 0);
+        };
+        let (x, y, h) = (rect.x, rect.y, rect.height);
+        let top = y
+            .saturating_add(h)
+            .saturating_add(i32::try_from(self.config.render.vertical_offset).unwrap_or(i32::MAX));
+        (top, 0, 0, x)
+    }
+
+    /// Recompute the popup and show or hide it.
+    fn refresh_popup(&mut self) {
+        let Some(frame) = self.current_frame() else {
+            self.hide_popup();
+            return;
+        };
+        tracing::debug!(
+            width = frame.canvas.width(),
+            height = frame.canvas.height(),
+            "popup frame ready"
+        );
+        self.last_frame = Some(frame);
+        self.present();
+    }
+
+    /// Push the latest frame to the compositor, creating or resizing the
+    /// surface as needed.
+    fn present(&mut self) {
+        // Moved out so `&frame` does not borrow `self` while `self.popup` is
+        // borrowed mutably.
+        let Some(frame) = self.last_frame.take() else {
+            return;
+        };
+        self.present_frame(&frame);
+        self.last_frame = Some(frame);
+    }
+
+    fn present_frame(&mut self, frame: &popup::PopupFrame) {
+        let Some(globals) = self.globals.as_ref() else {
+            return;
+        };
+        let Some(qh) = self.qh.clone() else {
+            return;
+        };
+        let size = (frame.metrics.width.max(1), frame.metrics.height.max(1));
+        let margin = self.popup_margin();
+
+        if self.popup.is_none() {
+            let layer = parse_layer(&self.config.wayland.layer).unwrap_or(Layer::Overlay);
+            let anchor = parse_anchor(&self.config.wayland.anchor)
+                .unwrap_or(wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_surface_v1::Anchor::Top
+                    | wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_surface_v1::Anchor::Left);
+            self.popup = Some(Popup::create(globals, &qh, layer, anchor, size, margin));
+            // The buffer is attached from the configure callback.
+            return;
+        }
+
+        let popup = self.popup.as_mut().expect("created above");
+        if popup.requested != size {
+            popup.request_size(size, margin);
+            return;
+        }
+        popup.set_margin(margin);
+        // Only paint once the compositor has acknowledged this exact size.
+        // Uploading a resized buffer before its configure would show the new
+        // pixels at the old geometry for a frame.
+        if popup.configured && popup.actual == size {
+            if let Err(e) = popup.upload(globals, &qh, &frame.canvas) {
+                tracing::warn!(error = %e, "failed to upload popup frame");
+            }
+        }
+    }
+
+    fn hide_popup(&mut self) {
+        if self.popup.take().is_some() {
+            tracing::debug!("popup hidden");
+        }
+        self.last_frame = None;
+    }
+}
+
+/// Load the CJK font, logging rather than aborting when it is unavailable.
+fn load_font(cfg: &crate::config::RenderConfig) -> Option<FontFace> {
+    let path = std::path::Path::new(&cfg.font_fallback_cjk);
+    match FontFace::load(path) {
+        Ok(font) => Some(font),
+        Err(e) => {
+            tracing::warn!(
+                path = %path.display(),
+                error = %e,
+                "candidate font unavailable; painting without text"
+            );
+            None
+        }
+    }
+}
+
+/// Start the fcitx5 kimpanel bridge on its own thread.
+///
+/// zbus needs a tokio reactor; the wayland side is calloop. Crossing that
+/// boundary on a dedicated thread keeps either event loop from having to know
+/// about the other — all they share is the [`crate::ipc`] channel.
+fn spawn_fcitx5_bridge(tx: ipc::Sender<DaemonToWayland>) -> Result<()> {
+    std::thread::Builder::new()
+        .name("fcitx5-dbus".into())
+        .spawn(move || {
+            let runtime = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(rt) => rt,
+                Err(e) => {
+                    tracing::error!(error = %e, "failed to build tokio runtime for fcitx5");
+                    return;
+                }
+            };
+            if let Err(e) = runtime.block_on(crate::fcitx5::kimpanel::publish(tx)) {
+                tracing::error!(error = %e, "fcitx5 kimpanel bridge stopped");
+            }
+        })
+        .map_err(|e| crate::Error::Internal(format!("spawn fcitx5 bridge: {e}")))?;
+    Ok(())
 }
 
 impl Default for LoopData {
@@ -220,6 +408,10 @@ impl Default for LoopData {
             seat_name: None,
             caret: LatestCaret::default(),
             config: Config::default_built(),
+            qh: None,
+            font: None,
+            popup: None,
+            last_frame: None,
         }
     }
 }
@@ -322,6 +514,82 @@ impl Dispatch<ZwlrLayerShellV1, ()> for LoopData {
         tracing::warn!(?event, "layer shell event; popup cannot be shown");
         if let Some(ic) = state.state.latest_focus().cloned() {
             state.state.focus_out(&ic);
+        }
+    }
+}
+
+impl Dispatch<WlSurface, ()> for LoopData {
+    // `wl_surface` events (enter/leave/scale) do not affect a popup that is
+    // positioned from the caret rectangle, so they are ignored.
+    fn event(
+        _: &mut Self,
+        _: &WlSurface,
+        _: <WlSurface as wayland_client::Proxy>::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+    }
+}
+
+impl Dispatch<WlShmPool, ()> for LoopData {
+    // `wl_shm_pool` has no events; the impl exists so `create_pool` can bind.
+    fn event(
+        _: &mut Self,
+        _: &WlShmPool,
+        _: <WlShmPool as wayland_client::Proxy>::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+    }
+}
+
+impl Dispatch<WlBuffer, ()> for LoopData {
+    fn event(
+        state: &mut Self,
+        buffer: &WlBuffer,
+        event: WlBufferEvent,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let WlBufferEvent::Release = event {
+            if let Some(popup) = state.popup.as_mut() {
+                popup.released(buffer);
+            }
+        }
+    }
+}
+
+impl Dispatch<ZwlrLayerSurfaceV1, ()> for LoopData {
+    fn event(
+        state: &mut Self,
+        _: &ZwlrLayerSurfaceV1,
+        event: LayerSurfaceEvent,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        match event {
+            LayerSurfaceEvent::Configure {
+                serial,
+                width,
+                height,
+            } => {
+                tracing::debug!(serial, width, height, "popup configured");
+                if let Some(popup) = state.popup.as_mut() {
+                    popup.ack_configure(serial, width, height);
+                }
+                // Safe to upload now: the configure was acknowledged first.
+                state.present();
+            }
+            LayerSurfaceEvent::Closed => {
+                tracing::debug!("compositor closed the popup layer surface");
+                state.popup = None;
+                state.last_frame = None;
+            }
+            _ => {}
         }
     }
 }
@@ -457,20 +725,33 @@ pub fn run(reloadable: Reloadable) -> Result<()> {
 
     install_signal_handlers(&evl.handle(), evl.get_signal(), reloadable)?;
 
+    // fcitx5 talks to us over D-Bus on a tokio thread; the candidate and caret
+    // updates it produces land here as calloop events.
+    let (tx, chan) = ipc::make_pair();
+    spawn_fcitx5_bridge(tx)?;
+    evl.handle()
+        .insert_source(chan, |event, _source, data: &mut LoopData| match event {
+            calloop::channel::Event::Msg(msg) => data.handle_daemon_msg(msg),
+            calloop::channel::Event::Closed => {
+                tracing::warn!("fcitx5 bridge channel closed");
+            }
+        })
+        .map_err(|e| crate::Error::Internal(format!("ipc channel insert: {e}")))?;
+
     tracing::info!("entering calloop event loop");
 
     let mut data = LoopData {
         needed,
         advertised,
         globals: Some(globals),
-        config: data_cfg,
+        config: data_cfg.clone(),
+        qh: Some(qh.clone()),
+        font: load_font(&data_cfg.render),
         ..LoopData::default()
     };
-    evl.run(None, &mut data, |data| {
-        // Placeholder: Task 18 adds fcitx5 IPC and signal-driven reload; the
-        // popup itself is painted from `popup::decide_and_paint` once a
-        // surface exists to draw on.
-        let _ = data;
+    evl.run(None, &mut data, |_data| {
+        // Everything is driven by callbacks: wayland events, the fcitx5 IPC
+        // channel, and signals. There is no idle work to do here.
     })
     .map_err(|e| crate::Error::Internal(format!("calloop run: {e}")))?;
 
@@ -481,6 +762,7 @@ pub fn run(reloadable: Reloadable) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state::IcId;
     use crate::wayland::registry;
 
     #[test]
@@ -518,6 +800,105 @@ mod tests {
         // the state a user is in when SIGUSR1 is the first thing they try.
         let d = LoopData::default();
         d.dump_state();
+    }
+
+    #[test]
+    fn candidates_and_caret_produce_a_frame() {
+        let mut d = LoopData::default();
+        let ic: IcId = std::sync::Arc::from("/kimpanel");
+        d.handle_daemon_msg(DaemonToWayland::LookupTable {
+            ic: ic.clone(),
+            table: crate::fcitx5::events::LookupTable {
+                candidates: vec!["你".into(), "泥".into()],
+                labels: vec!["1.".into(), "2.".into()],
+                cursor_pos: 0,
+                page_size: 0,
+                aux_up: None,
+                aux_down: Some("1/3".into()),
+                preedit: None,
+            },
+        });
+        assert!(d.current_frame().is_none(), "no caret yet");
+        d.handle_daemon_msg(DaemonToWayland::Caret {
+            ic,
+            rect: crate::wayland::text_input::CaretRect {
+                x: 12,
+                y: 30,
+                width: 1,
+                height: 18,
+            },
+        });
+        let frame = d.current_frame().expect("frame");
+        assert!(frame.canvas.width() > 0);
+    }
+
+    #[test]
+    fn an_empty_lookup_hides_the_popup() {
+        let mut d = LoopData::default();
+        let ic: IcId = std::sync::Arc::from("/kimpanel");
+        d.handle_daemon_msg(DaemonToWayland::Caret {
+            ic: ic.clone(),
+            rect: crate::wayland::text_input::CaretRect {
+                x: 1,
+                y: 2,
+                width: 1,
+                height: 16,
+            },
+        });
+        d.handle_daemon_msg(DaemonToWayland::LookupTable {
+            ic,
+            table: crate::fcitx5::events::LookupTable::default(),
+        });
+        assert!(d.current_frame().is_none());
+    }
+
+    #[test]
+    fn popup_margin_sits_below_the_caret() {
+        let mut d = LoopData::default();
+        let ic: IcId = std::sync::Arc::from("/kimpanel");
+        d.handle_daemon_msg(DaemonToWayland::Caret {
+            ic,
+            rect: crate::wayland::text_input::CaretRect {
+                x: 200,
+                y: 300,
+                width: 2,
+                height: 24,
+            },
+        });
+        let offset = d.config.render.vertical_offset as i32;
+        assert_eq!(d.popup_margin(), (300 + 24 + offset, 0, 0, 200));
+    }
+
+    #[test]
+    fn popup_margin_without_a_caret_uses_the_origin() {
+        let d = LoopData::default();
+        assert_eq!(d.popup_margin(), (0, 0, 0, 0));
+    }
+
+    #[test]
+    fn refresh_without_globals_does_not_create_a_surface() {
+        let mut d = LoopData::default();
+        let ic: IcId = std::sync::Arc::from("/kimpanel");
+        d.handle_daemon_msg(DaemonToWayland::LookupTable {
+            ic: ic.clone(),
+            table: crate::fcitx5::events::LookupTable {
+                candidates: vec!["你".into()],
+                ..Default::default()
+            },
+        });
+        d.handle_daemon_msg(DaemonToWayland::Caret {
+            ic,
+            rect: crate::wayland::text_input::CaretRect {
+                x: 1,
+                y: 2,
+                width: 1,
+                height: 16,
+            },
+        });
+        assert!(d.popup.is_none());
+        assert!(d.last_frame.is_some());
+        d.handle_daemon_msg(DaemonToWayland::Commit(std::sync::Arc::from("/kimpanel")));
+        assert!(d.last_frame.is_none());
     }
 
     #[test]

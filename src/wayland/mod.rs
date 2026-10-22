@@ -5,6 +5,7 @@
 
 pub mod bind;
 pub mod layer_shell;
+pub mod popup;
 pub mod registry;
 pub mod shm;
 pub mod text_input;

@@ -1,0 +1,65 @@
+[Unit]
+Description=rime-popup fcitx5 candidate window for niri
+Documentation=https://github.com/your-org/rime-popup
+
+# The daemon draws a layer-shell surface and talks to fcitx5 over the *user*
+# session bus, so it is a user unit, not a system one. A system unit would
+# start outside any graphical session and never see either.
+PartOf=graphical-session.target
+After=graphical-session.target
+
+# fcitx5 owns the input contexts this daemon renders. Starting before it means
+# a window opened in the first seconds of login has no input context yet and
+# silently shows nothing; starting after it does not guarantee the ordering
+# either way, since fcitx5 is often user-started. Both units tolerate a late
+# peer, so this is best-effort ordering only.
+After=fcitx5.service
+Wants=fcitx5.service
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/rime-popup
+
+# SIGHUP is the daemon's reload signal (see src/signals.rs). Wiring it to
+# systemctl's reload verb means `systemctl --user reload rime-popup` does the
+# right thing without the user having to remember a raw kill.
+ExecReload=/bin/kill -HUP $MAINPID
+
+# on-failure, not always: the daemon exits 0 on SIGTERM, so `systemctl stop`
+# does not trigger a restart loop, while a genuine crash still recovers.
+Restart=on-failure
+RestartSec=2
+
+# SIGINT and SIGTERM both unwind the event loop and exit 0. The daemon masks
+# them and handles them on the loop thread, so it needs well over the default
+# 90 seconds only if the compositor has stopped answering wayland requests.
+KillSignal=SIGTERM
+TimeoutStopSec=10
+
+# `general.log` in the config file is read at startup. The environment
+# overrides it here, so remove this line to let the file decide.
+Environment=RUST_LOG=info
+
+# Hardening. The daemon only ever reads its config and draws to a layer
+# surface, so it needs almost nothing from the system.
+NoNewPrivileges=yes
+ProtectSystem=strict
+PrivateTmp=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+
+# NOT `ProtectHome=yes`: the default config path is
+# `$XDG_CONFIG_HOME/rime-popup/config.toml`, which is under $HOME. Hiding $HOME
+# would leave the daemon running perfectly while silently ignoring its own
+# config — the failure mode this unit is supposed to prevent. `read-only` is
+# the correct level: read the config, write nothing there.
+ProtectHome=read-only
+
+# The daemon connects to the compositor's wayland socket and nothing else.
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=graphical-session.target

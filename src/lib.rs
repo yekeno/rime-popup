@@ -7,6 +7,7 @@
 //! - [`state`]: per-IC state and the global focus tracker
 //! - [`render`]: text shaping + raster
 //! - [`popup`]: glue from state to layer-shell surface
+//! - [`niri_ipc`]: compositor query for the focused caret rectangle
 //! - [`ipc`]: tokio → calloop bridge
 //! - [`cli`]: command-line flags
 
@@ -15,6 +16,7 @@ pub mod config;
 pub mod errors;
 pub mod fcitx5;
 pub mod ipc;
+pub mod niri_ipc;
 pub mod popup;
 pub mod render;
 pub mod runtime;

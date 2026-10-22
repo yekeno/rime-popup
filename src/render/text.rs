@@ -135,12 +135,16 @@ pub fn draw_text(
 
 /// Convenience: draw candidate `idx` of a popup at its measured cell
 /// position, vertically centred inside the canvas.
+///
+/// `label` is the short position marker ("1.", "2.", …) drawn before the
+/// candidate text. Returns the advance of `text` only.
 pub fn draw_cell(
     canvas: &mut Pixmap,
     font: &FontFace,
     m: PopupMetrics,
     cfg: &RenderConfig,
     idx: usize,
+    label: &str,
     text: &str,
 ) -> f32 {
     let px_size = cfg.font_size as f32;
@@ -150,7 +154,13 @@ pub fn draw_cell(
     let baseline = (m.height as f32 + px_size) * 0.5;
     let left = cell_x(&m, cfg, idx) as f32;
     let color = paint::color_or(&cfg.text, Color::WHITE);
-    draw_text(canvas, font, text, left, baseline, px_size, color)
+    let label_advance = draw_text(canvas, font, label, left, baseline, px_size, color);
+    let text_left = if label_advance > 0.0 {
+        left + label_advance + cfg.label_gap as f32
+    } else {
+        left
+    };
+    draw_text(canvas, font, text, text_left, baseline, px_size, color)
 }
 
 fn paint_glyph(
@@ -245,7 +255,7 @@ mod tests {
     }
 
     fn metrics() -> PopupMetrics {
-        crate::render::layout::measure(&["你好".into(), "世界".into()], &cfg())
+        crate::render::layout::measure(&[], &["你好".into(), "世界".into()], &cfg())
     }
 
     #[test]
@@ -396,7 +406,7 @@ mod tests {
 
         // No panic and no wraparound — success is sufficient; the explicit
         // bounds check below adds a stronger invariant.
-        let advance = draw_cell(&mut canvas, &face, m, &cfg, 1, "好");
+        let advance = draw_cell(&mut canvas, &face, m, &cfg, 1, "2.", "好");
         assert!(advance > 0.0, "draw_cell must report positive advance");
 
         // Out-of-bounds reads must return None: tiny-skia computes the byte
@@ -451,11 +461,11 @@ mod tests {
     fn draw_cell_uses_configured_font_size() {
         let face = noto_face();
         let cfg = cfg_with_size(28);
-        let m = crate::render::layout::measure(&["你".into()], &cfg);
+        let m = crate::render::layout::measure(&[], &["你".into()], &cfg);
         let mut canvas = paint::make_canvas(m).expect("allocates");
         paint::clear_bg(&mut canvas, &cfg);
 
-        let advance = draw_cell(&mut canvas, &face, m, &cfg, 0, "你");
+        let advance = draw_cell(&mut canvas, &face, m, &cfg, 0, "1.", "你");
         // One CJK char at 28px should advance roughly one em.
         assert!(
             advance > 20.0 && advance < 40.0,

@@ -8,6 +8,7 @@ use tiny_skia::Pixmap;
 use crate::config::Config;
 use crate::render::layout::{measure, PopupMetrics};
 use crate::render::paint;
+use crate::render::text::FontFace;
 use crate::state::State;
 use crate::wayland::text_input::LatestCaret;
 
@@ -27,18 +28,43 @@ pub struct PopupFrame {
 /// or the focus does not currently carry a lookup table. Allocation failures
 /// during `make_canvas` are also folded into `None` because the caller has no
 /// useful recovery beyond skipping this frame.
-pub fn decide_and_paint(st: &State, caret: &LatestCaret, cfg: &Config) -> Option<PopupFrame> {
+pub fn decide_and_paint(
+    st: &State,
+    caret: &LatestCaret,
+    cfg: &Config,
+    font: Option<&FontFace>,
+) -> Option<PopupFrame> {
     let lk = st.focused_lookup()?;
-    let _caret_rect = caret.rect?;
+    let caret_rect = caret.rect?;
+    // A zero-sized rectangle cannot anchor anything. Hiding is better than
+    // drawing at the output origin, which is what an all-zero caret means.
+    if caret_rect.width <= 0 || caret_rect.height <= 0 {
+        return None;
+    }
     let total = lk.candidates.len();
     if total == 0 {
         return None;
     }
-    let metrics = measure(&lk.candidates, &cfg.render);
+    let metrics = measure(&lk.labels, &lk.candidates, &cfg.render);
     let mut canvas = paint::make_canvas(metrics).ok()?;
     paint::clear_bg(&mut canvas, &cfg.render);
     let cursor = lk.cursor_pos.min(total.saturating_sub(1) as u32) as usize;
     paint::draw_highlight(&mut canvas, &cfg.render, metrics, cursor, total);
+    if let Some(font) = font {
+        for (idx, candidate) in lk.candidates.iter().enumerate() {
+            let label = lk.labels.get(idx).map_or("", String::as_str);
+            crate::render::text::draw_cell(
+                &mut canvas,
+                font,
+                metrics,
+                &cfg.render,
+                idx,
+                label,
+                candidate,
+            );
+        }
+    }
+    paint::draw_border(&mut canvas, &cfg.render);
     Some(PopupFrame {
         metrics,
         canvas,
@@ -58,7 +84,7 @@ mod tests {
         let st = State::new();
         let caret = LatestCaret::default();
         let cfg = Config::default_built();
-        assert!(decide_and_paint(&st, &caret, &cfg).is_none());
+        assert!(decide_and_paint(&st, &caret, &cfg, None).is_none());
     }
 
     #[test]
@@ -71,6 +97,7 @@ mod tests {
             &ic,
             LookupTable {
                 candidates: vec!["ni".into(), "你".into()],
+                labels: vec!["1.".into(), "2.".into()],
                 cursor_pos: 0,
                 page_size: 9,
                 aux_up: None,
@@ -80,7 +107,7 @@ mod tests {
         );
         // No `focus_enter` so `caret.rect` stays None.
         let caret = LatestCaret::default();
-        assert!(decide_and_paint(&st, &caret, &Config::default_built()).is_none());
+        assert!(decide_and_paint(&st, &caret, &Config::default_built(), None).is_none());
     }
 
     #[test]
@@ -93,6 +120,7 @@ mod tests {
             &ic,
             LookupTable {
                 candidates: vec!["ni".into(), "你".into()],
+                labels: vec!["1.".into(), "2.".into()],
                 cursor_pos: 0,
                 page_size: 9,
                 aux_up: None,
@@ -103,9 +131,29 @@ mod tests {
         let mut caret = LatestCaret::default();
         caret.focus_enter(WlSurfaceId(1));
         caret.cursor_rect(10, 10, 1, 16);
-        let f = decide_and_paint(&st, &caret, &Config::default_built()).expect("frame");
+        let f = decide_and_paint(&st, &caret, &Config::default_built(), None).expect("frame");
         assert!(f.canvas.width() > 0);
         assert!(f.canvas.height() > 0);
+    }
+
+    #[test]
+    fn zero_sized_caret_hides_the_popup() {
+        let mut st = State::new();
+        let ic: Arc<str> = Arc::from("/IC/0");
+        st.insert_ic(ic.clone());
+        st.focus_in(&ic);
+        st.set_lookup(
+            &ic,
+            LookupTable {
+                candidates: vec!["你".into()],
+                labels: vec!["1.".into()],
+                ..Default::default()
+            },
+        );
+        let mut caret = LatestCaret::default();
+        caret.focus_enter(WlSurfaceId(1));
+        caret.cursor_rect(0, 0, 0, 0);
+        assert!(decide_and_paint(&st, &caret, &Config::default_built(), None).is_none());
     }
 
     #[test]
@@ -118,6 +166,7 @@ mod tests {
             &ic,
             LookupTable {
                 candidates: vec![],
+                labels: vec![],
                 cursor_pos: 0,
                 page_size: 0,
                 aux_up: None,
@@ -128,6 +177,6 @@ mod tests {
         let mut caret = LatestCaret::default();
         caret.focus_enter(WlSurfaceId(1));
         caret.cursor_rect(10, 10, 1, 16);
-        assert!(decide_and_paint(&st, &caret, &Config::default_built()).is_none());
+        assert!(decide_and_paint(&st, &caret, &Config::default_built(), None).is_none());
     }
 }

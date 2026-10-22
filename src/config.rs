@@ -14,6 +14,7 @@ fn default_render() -> RenderConfig {
         font_size: 14,
         line_padding: 8,
         candidate_gap: 12,
+        label_gap: 6,
         bg: "#1e1e1e".into(),
         highlight_bg: "#3a3a3a".into(),
         text: "#e6e6e6".into(),
@@ -73,6 +74,8 @@ pub struct RenderConfig {
     pub font_size: u32,
     pub line_padding: u32,
     pub candidate_gap: u32,
+    /// Space between a candidate's position label and its text.
+    pub label_gap: u32,
     /// Popup background. Must be distinct from `text`: the plan's original
     /// `clear_bg` filled with the text colour because no such field existed.
     pub bg: String,

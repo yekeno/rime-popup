@@ -13,11 +13,17 @@
 //! caret is. An input method is therefore never told where the caret is over
 //! wayland, and cannot ask.
 //!
-//! The rectangle that positions the popup comes from fcitx5's own DBus input
-//! context instead — see [`crate::fcitx5::events::extract_caret`]. What this
-//! module contributes is the *focus* half: knowing which surface is live, so
-//! a rectangle arriving from a context we are no longer tracking can be
-//! discarded rather than drawn at a stale position.
+//! The rectangle that positions the popup comes from two fallbacks, both
+//! folded in by [`LatestCaret::set_rect`]:
+//!
+//! * For wayland clients, rime-popup asks niri over IPC, which converts the
+//!   client's surface-local caret to output-logical coordinates.
+//! * For X11/XIM clients, niri has nothing to report and fcitx5's kimpanel
+//!   `SetSpotRect` is used instead.
+//!
+//! What this module contributes is the *focus* half: knowing which surface is
+//! live, so a rectangle arriving from a context we are no longer tracking can
+//! be discarded rather than drawn at a stale position.
 
 /// Opaque identifier for a `WlSurface`, taken from its wire id.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
@@ -50,6 +56,16 @@ impl LatestCaret {
             self.focus = None;
             self.rect = None;
         }
+    }
+
+    /// Adopt a rectangle from a source that tracks focus itself.
+    ///
+    /// kimpanel reports the caret for whichever context fcitx5 considers
+    /// current, so there is no wayland `enter` to gate on. The wayland focus
+    /// id is left untouched: it describes a surface this client owns, and
+    /// overwriting it with a synthetic value would misreport the dump.
+    pub fn set_rect(&mut self, rect: CaretRect) {
+        self.rect = Some(rect);
     }
 
     /// Record a cursor rect. Ignored while unfocused: a rect arriving without
@@ -116,5 +132,20 @@ mod tests {
         c.cursor_rect(2, 3, 1, 20);
         let r = c.rect.expect("rect");
         assert_eq!((r.x, r.y, r.height), (2, 3, 20));
+    }
+
+    #[test]
+    fn set_rect_works_without_a_wayland_focus() {
+        // kimpanel tracks focus on the fcitx5 side; there is no `enter` for
+        // the daemon to observe, so the rect must be adoptable on its own.
+        let mut c = LatestCaret::default();
+        c.set_rect(CaretRect {
+            x: 4,
+            y: 9,
+            width: 2,
+            height: 18,
+        });
+        assert!(c.focus.is_none());
+        assert_eq!(c.rect.expect("rect").height, 18);
     }
 }
