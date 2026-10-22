@@ -1,5 +1,7 @@
 # rime-popup
 
+**English** | [简体中文](README.zh-CN.md)
+
 A Wayland daemon that draws **fcitx5 / Rime candidate windows under the caret**
 on [niri](https://github.com/yekeno/niri), with fcitx5's position numbers kept
 (`1. 你  2. 泥  …`).

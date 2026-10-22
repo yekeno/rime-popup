@@ -1,5 +1,7 @@
 # Architecture and data flow
 
+**English** | [简体中文](architecture.zh-CN.md)
+
 rime-popup is a user daemon with two event loops joined by one channel:
 
 - a **calloop** loop that owns the Wayland connection and the candidate layer
